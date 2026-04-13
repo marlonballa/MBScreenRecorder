@@ -1,5 +1,6 @@
 import threading
 import time
+import queue
 import cv2
 import numpy as np
 import mss
@@ -8,69 +9,107 @@ from datetime import datetime
 
 
 def get_output_dir() -> Path:
-    # Cria a pasta "Recordings" na pasta home do usuário, se não existir
     path = Path.home() / "Recordings"
     path.mkdir(exist_ok=True)
     return path
 
 
 def timestamp() -> str:
-    # Retorna a data e hora atual formatada para uso em nomes de arquivo
     return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 
 class Recorder:
-    def __init__(self, fps: int = 24):
-        # Taxa de quadros por segundo da gravação
+    def __init__(self, fps: int = 15, monitor: int = 0):
         self.fps = fps
-        # Indica se a gravação está em andamento
+        self.monitor = monitor
         self.recording = False
-        # Caminho do arquivo de saída gerado
         self.output_path = None
-        # Contador de quadros capturados
         self.frame_count = 0
-        # Thread responsável pelo loop de gravação
-        self._thread = None
+        self._capture_thread = None
+        self._write_thread = None
+        self._frame_queue = queue.Queue(maxsize=30)
 
     def start(self) -> Path:
-        # Define o caminho do arquivo de saída com base no horário atual
         self.output_path = get_output_dir() / f"recording_{timestamp()}.mp4"
         self.recording = True
         self.frame_count = 0
-        # Inicia a gravação em uma thread separada para não bloquear a interface
-        self._thread = threading.Thread(target=self._record_loop, daemon=True)
-        self._thread.start()
+
+        # Thread de captura — prioridade baixa
+        self._capture_thread = threading.Thread(
+            target=self._capture_loop, daemon=True)
+
+        # Thread de escrita em disco — prioridade baixa
+        self._write_thread = threading.Thread(
+            target=self._write_loop, daemon=True)
+
+        self._capture_thread.start()
+        self._write_thread.start()
+
+        # Reduz prioridade no Windows
+        self._set_low_priority(self._capture_thread)
+        self._set_low_priority(self._write_thread)
+
         return self.output_path
 
     def stop(self):
-        # Sinaliza o fim da gravação e aguarda a thread encerrar
         self.recording = False
-        if self._thread:
-            self._thread.join(timeout=5)
+        if self._capture_thread:
+            self._capture_thread.join(timeout=5)
+        # Aguarda fila esvaziar antes de fechar o writer
+        self._frame_queue.join()
+        if self._write_thread:
+            self._write_thread.join(timeout=5)
 
-    def _record_loop(self):
-        # Loop principal de captura de tela e escrita dos quadros no arquivo
+    def _set_low_priority(self, thread):
+        try:
+            import ctypes
+            handle = ctypes.windll.kernel32.OpenThread(0x0200, False, thread.ident)
+            ctypes.windll.kernel32.SetThreadPriority(handle, -2)
+            ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            pass  # Silencia em caso de erro — não crítico
+
+    def _capture_loop(self):
         with mss.mss() as sct:
-            # Seleciona o monitor principal (índice 1 no mss)
-            monitor = sct.monitors[1]
-            w, h = monitor["width"], monitor["height"]
-            # Codec mp4v para gerar arquivos .mp4
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(str(self.output_path), fourcc, self.fps, (w, h))
-            # Intervalo em segundos entre cada quadro
+            monitor = sct.monitors[self.monitor]
             interval = 1.0 / self.fps
 
             while self.recording:
-                t0 = time.time()
-                # Captura a tela e converte para array NumPy
+                t0 = time.perf_counter()
+
                 frame = np.array(sct.grab(monitor))
-                # Converte de BGRA (formato do mss) para BGR (formato do OpenCV)
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-                writer.write(frame)
-                self.frame_count += 1
-                # Aguarda o tempo restante do intervalo para manter o FPS alvo
-                elapsed = time.time() - t0
+
+                try:
+                    self._frame_queue.put_nowait(frame)
+                except queue.Full:
+                    pass  # Descarta frame se fila cheia — evita acúmulo
+
+                elapsed = time.perf_counter() - t0
                 time.sleep(max(0, interval - elapsed))
 
-            # Libera o arquivo de vídeo ao encerrar
+            # Sinaliza fim para a thread de escrita
+            self._frame_queue.put(None)
+
+    def _write_loop(self):
+        writer = None
+
+        while True:
+            frame = self._frame_queue.get()
+
+            if frame is None:
+                self._frame_queue.task_done()
+                break
+
+            if writer is None:
+                h, w = frame.shape[:2]
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                writer = cv2.VideoWriter(
+                    str(self.output_path), fourcc, self.fps, (w, h))
+
+            writer.write(frame)
+            self.frame_count += 1
+            self._frame_queue.task_done()
+
+        if writer:
             writer.release()
