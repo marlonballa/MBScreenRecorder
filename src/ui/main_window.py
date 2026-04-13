@@ -1,13 +1,15 @@
 import tkinter as tk
-from tkinter import messagebox
 import time
 import threading
-from pathlib import Path
-from PIL import Image
+import mss
 import pystray
+from PIL import Image
+from pathlib import Path
+from tkinter import messagebox
 from src.core.capture import capture_screen
 from src.core.recorder import Recorder, get_output_dir
-import mss
+from tkinter import filedialog
+from src.core.config import load_config, save_config
 
 
 PASSWORD = "Splendor2026*"
@@ -114,6 +116,26 @@ class MainWindow:
 
         frame = tk.Frame(self.root, bg=BG, padx=12, pady=10)
         frame.pack()
+        frame2 = tk.Frame(self.root, bg="#0f0f0f", padx=12, pady=0)
+        frame2.pack(fill="x")
+
+        tk.Button(
+            frame2, text="📁  pasta",
+            font=("Courier New", 8),
+            bg="#0f0f0f", fg="#555555",
+            relief="flat", cursor="hand2",
+            padx=6, pady=2,
+            command=lambda: self._ask_password_then(self._choose_folder)
+        ).pack(side="left")
+
+        tk.Button(
+            frame2, text="✕",
+            font=("Courier New", 8),
+            bg="#0f0f0f", fg="#555555",
+            relief="flat", cursor="hand2",
+            padx=6, pady=2,
+            command=lambda: self._ask_password_then(self._quit)
+        ).pack(side="right")
 
         self.btn_record = tk.Button(
             frame, text="⏺",
@@ -196,6 +218,22 @@ class MainWindow:
             except Exception:
                 pass
         self.overlays = []
+
+    def _choose_folder(self):
+        folder = filedialog.askdirectory(title="Escolher pasta de gravações")
+        if folder:
+            config = load_config()
+            config["output_dir"] = folder
+            save_config(config)
+            messagebox.showinfo("Salvo", f"Gravações serão salvas em:\n{folder}")
+
+    def _ask_password_then(self, callback):
+        def check(pwd):
+            if pwd == PASSWORD:
+                callback()
+            elif pwd is not None:
+                messagebox.showerror("Acesso negado", "Senha incorreta.")
+        self.root.after(0, lambda: PasswordDialog(self.root, check))
 
     def _select_monitor(self, value):
         self.monitor_var.set(value)

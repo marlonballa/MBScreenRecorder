@@ -6,11 +6,12 @@ import numpy as np
 import mss
 from pathlib import Path
 from datetime import datetime
-
+from src.core.config import load_config
 
 def get_output_dir() -> Path:
-    path = Path.home() / "Recordings"
-    path.mkdir(exist_ok=True)
+    config = load_config()
+    path = Path(config["output_dir"])
+    path.mkdir(exist_ok=True, parents=True)
     return path
 
 
