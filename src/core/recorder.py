@@ -20,7 +20,7 @@ def timestamp() -> str:
 
 
 class Recorder:
-    def __init__(self, fps: int = 10):
+    def __init__(self, fps: int = 24):
         # Taxa de quadros por segundo da gravação
         self.fps = fps
         # Indica se a gravação está em andamento
